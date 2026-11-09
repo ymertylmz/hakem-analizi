@@ -27,14 +27,98 @@ from engine import (
 st.set_page_config(page_title="Hakem Analizi | Maç Bülteni", page_icon="⚽", layout="wide")
 
 BASE = "https://v3.football.api-sports.io"
-COUNTRIES = ["Turkey", "England", "Spain", "Germany", "Italy", "France", "Portugal",
-             "Netherlands", "Norway", "Brazil", "Argentina", "Australia"]
+# Kaynak: ZaslugaBet Günlük Sinyal deposundaki EXACT lig eşleştirmesi.
+# İskoçya play-out / play-off varyantları aynı lig ID'sine karşılık geldiği
+# için bir kez listelenir. Buna ek olarak istenen 3 yeni lig dahil edildi.
+# (API ülkesi, ZaslugaBet'teki görünen ad, API'de kabul edilen adlar)
+ZASLUGA_LEAGUES = [
+    ("Spain", "LaLiga", ("La Liga", "Primera Division", "Primera División")),
+    ("Spain", "LaLiga 2", ("Segunda División", "Segunda Division", "LaLiga2")),
+    ("England", "Premier Lig", ("Premier League",)),
+    ("England", "Championship", ("Championship",)),
+    ("England", "1. Lig", ("League One",)),
+    ("England", "2. Lig", ("League Two",)),
+    ("England", "Ulusal Lig", ("National League",)),
+    ("Italy", "Serie A", ("Serie A",)),
+    ("France", "Ligue 1", ("Ligue 1",)),
+    ("France", "Ligue 2", ("Ligue 2",)),
+    ("France", "Ligue 3", ("National", "National 1",)),
+    ("Germany", "Bundesliga", ("Bundesliga",)),
+    ("Germany", "2. Bundesliga", ("2. Bundesliga",)),
+    ("Germany", "3. Lig", ("3. Liga",)),
+    ("Portugal", "Premier Lig", ("Primeira Liga", "Liga Portugal",)),
+    ("Turkey", "Süper Lig", ("Süper Lig", "Super Lig",)),
+    ("Finland", "Veikkausliiga", ("Veikkausliiga",)),
+    ("Austria", "2. Lig", ("2. Liga",)),
+    ("Austria", "Bundesliga", ("Bundesliga",)),
+    ("Denmark", "Süper Lig", ("Superliga",)),
+    ("Denmark", "1. Lig", ("1. Division",)),
+    ("Sweden", "Superettan", ("Superettan",)),
+    ("Sweden", "Allsvenskan", ("Allsvenskan",)),
+    ("Norway", "Eliteserien", ("Eliteserien",)),
+    ("Netherlands", "Eredivisie", ("Eredivisie",)),
+    ("Netherlands", "Eerste Divisie", ("Eerste Divisie",)),
+    ("Scotland", "Championship", ("Championship",)),
+    ("Scotland", "Premiership", ("Premiership",)),
+    ("Poland", "Ekstraklasa", ("Ekstraklasa",)),
+    ("Belgium", "Pro Lig", ("Pro League", "Jupiler Pro League",)),
+    ("Ireland", "Premier Lig", ("Premier Division",)),
+    ("Northern Ireland", "Premiership", ("Premiership",)),
+    ("Russia", "Premier Lig", ("Premier League",)),
+    ("Switzerland", "Süper Lig", ("Super League",)),
+    ("Greece", "Süper Lig", ("Super League 1", "Super League",)),
+    ("China", "Süper Lig", ("Super League",)),
+    ("USA", "MLS", ("Major League Soccer", "MLS",)),
+    # Kullanıcının ZaslugaBet'e eklettiği yeni ligler:
+    ("Turkey", "1. Lig", ("1. Lig", "TFF 1. Lig",)),
+    ("Brazil", "Série A", ("Serie A", "Série A",)),
+    ("Australia", "A-League", ("A-League", "A-League Men",)),
+]
+
+COUNTRY_TR = {
+    "Spain": "İspanya", "England": "İngiltere", "Italy": "İtalya",
+    "France": "Fransa", "Germany": "Almanya", "Portugal": "Portekiz",
+    "Turkey": "Türkiye", "Finland": "Finlandiya", "Austria": "Avusturya",
+    "Denmark": "Danimarka", "Sweden": "İsveç", "Norway": "Norveç",
+    "Netherlands": "Hollanda", "Scotland": "İskoçya", "Poland": "Polonya",
+    "Belgium": "Belçika", "Ireland": "İrlanda", "Northern Ireland": "Kuzey İrlanda",
+    "Russia": "Rusya", "Switzerland": "İsviçre", "Greece": "Yunanistan",
+    "China": "Çin", "USA": "ABD", "Brazil": "Brezilya",
+    "Australia": "Avustralya",
+}
+COUNTRIES = list(dict.fromkeys(row[0] for row in ZASLUGA_LEAGUES))
+assert len(ZASLUGA_LEAGUES) == 40
+
+# Her ülkenin ana ulusal kupa eşleştirmesi; uygun olmayan kadın/hazırlık/alt yaş hariç.
+CUP_ALIASES = {
+    "Turkey": ("Cup", "Türkiye Kupası", "Turkish Cup"),
+    "England": ("FA Cup",), "Spain": ("Copa del Rey",),
+    "Italy": ("Coppa Italia",), "France": ("Coupe de France",),
+    "Germany": ("DFB Pokal", "DFB-Pokal"),
+    "Portugal": ("Taça de Portugal", "Taca de Portugal",),
+    "Netherlands": ("KNVB Beker",), "Scotland": ("FA Cup", "Scottish Cup"),
+    "Finland": ("Suomen Cup", "Suomen Cupen"),
+    "Austria": ("Cup", "ÖFB Cup",),
+    "Denmark": ("DBU Pokalen", "DBU Pokal"),
+    "Sweden": ("Svenska Cupen",), "Norway": ("NM Cupen", "NM Cupen",),
+    "Poland": ("Cup", "Puchar Polski"),
+    "Belgium": ("Cup", "Belgian Cup"),
+    "Ireland": ("FAI Cup",), "Northern Ireland": ("Irish Cup",),
+    "Russia": ("Cup", "Russian Cup"),
+    "Switzerland": ("Schweizer Pokal", "Swiss Cup"),
+    "Greece": ("Cup", "Greek Cup"),
+    "China": ("FA Cup", "Chinese FA Cup"),
+    "USA": ("US Open Cup",),
+    "Brazil": ("Copa Do Brasil", "Copa do Brasil"),
+    "Australia": ("Australia Cup", "FFA Cup"),
+}
 COUNTRY_ALIASES = {
     "turkiye", "turkey", "england", "france", "germany", "italy", "spain",
     "portugal", "netherlands", "norway", "brazil", "argentina", "australia",
     "poland", "sweden", "denmark", "greece", "belgium", "austria", "croatia",
     "serbia", "switzerland", "ukraine", "israel", "scotland", "wales", "romania",
     "qatar", "saudi arabia", "united states", "usa", "morocco", "slovakia",
+    "ireland", "northern ireland", "finland", "russia", "china",
 }
 
 
@@ -82,6 +166,12 @@ def list_leagues(country, key):
     return request_api("leagues", {"country": country}, key)
 
 
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def list_all_leagues(key):
+    # API-Football /leagues parametresiz bütün ülkeleri getirir (tek API çağrısı).
+    return request_api("leagues", {}, key)
+
+
 @st.cache_data(ttl=600, show_spinner=False)
 def get_day_fixtures(day, key):
     # Tek çağrı bütün ülkelerin o günkü müsabakalarını getirir, sonra filtrelenir.
@@ -121,35 +211,57 @@ def eligible_competition(info):
     return not any(x in name for x in bans)
 
 
-def default_turkish_names(catalog):
-    """Başlangıçta profesyonel ligler + Türkiye Kupası; kullanıcı isterse değiştirebilir."""
-    patterns = (r"\bsuper lig\b", r"\bsuper lig", r"\b1\.?\s*lig\b",
-                r"\b2\.?\s*lig\b", r"\b3\.?\s*lig\b", r"turkiye kupas",
-                r"turkish cup", r"tff 1", r"tff 2", r"tff 3")
-    return [label for label in catalog if any(re.search(p, simplify(label)) for p in patterns)]
+def normalized_league_name(text):
+    return " ".join(re.findall(r"[a-z0-9]+", simplify(text)))
 
 
-def board_default_names(catalog, country):
-    if country == "Turkey":
-        return [label for label in catalog if re.search(r"\bsuper lig\b|\b1\.?\s*lig\b", simplify(label))]
-    return list(catalog)[:3]
+def league_available(entry, season):
+    years = {int(x.get("year")) for x in (entry.get("seasons") or [])
+             if x.get("year") is not None}
+    return bool({int(season), int(season) - 1} & years)
 
 
-def competition_catalog(leagues, years):
-    result = {}
-    for entry in leagues:
+def resolve_zasluga_catalog(entries, season):
+    """Lig adlarını ülkeye bağlı olarak doğrular; belirsiz ID ataması yapmaz."""
+    by_country = {}
+    for entry in entries:
+        country = (entry.get("country") or {}).get("name") or ""
         meta = entry.get("league") or {}
         if not eligible_competition(meta):
             continue
-        lid = meta.get("id")
-        if lid is None:
+        by_country.setdefault(simplify(country), []).append(entry)
+
+    league_catalog, cup_catalog, unresolved = {}, {}, []
+    for country, public_name, aliases in ZASLUGA_LEAGUES:
+        options = [entry for entry in by_country.get(simplify(country), [])
+                   if simplify((entry.get("league") or {}).get("type")) == "league"
+                   and normalized_league_name((entry.get("league") or {}).get("name"))
+                       in {normalized_league_name(name) for name in aliases}]
+        options.sort(key=lambda e: (league_available(e, season),
+                                   normalized_league_name((e.get("league") or {}).get("name")) == normalized_league_name(aliases[0])),
+                     reverse=True)
+        label = f"{COUNTRY_TR[country]} · {public_name}"
+        if not options:
+            unresolved.append(f"{label}: API lig adı eşleşmedi")
             continue
-        seasons = {int(x.get("year")) for x in entry.get("seasons", []) if x.get("year") is not None}
-        if not seasons.intersection(years):
-            continue
-        label = f"{meta.get('name', 'Lig')} · {meta.get('type', '')} · ID {lid}"
-        result[label] = int(lid)
-    return dict(sorted(result.items(), key=lambda x: simplify(x[0])))
+        entry = options[0]
+        lid = int(entry["league"]["id"])
+        league_catalog[label] = (country, lid)
+        if not league_available(entry, season):
+            unresolved.append(f"{label}: {season-1}/{season} veya {season}/{season+1} sezonu API kataloğunda görünmüyor")
+
+    for country, aliases in CUP_ALIASES.items():
+        options = [entry for entry in by_country.get(simplify(country), [])
+                   if simplify((entry.get("league") or {}).get("type")) == "cup"
+                   and normalized_league_name((entry.get("league") or {}).get("name"))
+                      in {normalized_league_name(name) for name in aliases}]
+        options.sort(key=lambda e: league_available(e, season), reverse=True)
+        if options:
+            entry = options[0]
+            label = f"{COUNTRY_TR[country]} · {entry['league']['name']} (Kupa)"
+            cup_catalog[label] = (country, int(entry["league"]["id"]))
+    return league_catalog, cup_catalog, unresolved
+
 
 
 def row_score(f):
@@ -176,7 +288,7 @@ def make_board(fixtures, selected_leagues):
         result.append({
             "id": fi.get("id"), "date": str(fi.get("date") or ""), "kickoff": time_string,
             "competition": league.get("name") or "-", "league_id": int(lid),
-            "round": league.get("round") or "", "home": (t.get("home") or {}).get("name") or "-",
+            "country": league.get("country") or "", "round": league.get("round") or "", "home": (t.get("home") or {}).get("name") or "-",
             "away": (t.get("away") or {}).get("name") or "-",
             "score": row_score(f), "referee": fi.get("referee") or "",
             "status": (fi.get("status") or {}).get("short") or "NS",
@@ -288,41 +400,51 @@ if not api_key:
 with st.sidebar:
     st.header("📅 Maç bülteni")
     selected_date = st.date_input("Maç tarihi", value=date.today(), format="DD.MM.YYYY")
-    country = st.selectbox("Ülke", COUNTRIES)
     season = st.number_input("Sezon başlangıç yılı", min_value=2015, max_value=2035,
                              value=selected_date.year if selected_date.month >= 7 else selected_date.year - 1,
-                             step=1, help="Türkiye/Avrupa: sezon başlangıç yılı. Brezilya gibi takvim liglerinde yılı değiştirebilirsin.")
+                             step=1, help="Avrupa: başlangıç yılı; takvim yılı liglerinde yılı gerekirse değiştir.")
     st.caption(f"Geçen sezon: {season-1}/{season}; bu sezon: {season}/{season+1}")
 
-try:
-    catalog = competition_catalog(list_leagues(country, api_key), {int(season), int(season)-1})
-except Exception as exc:
-    st.error(f"Lig listesini çekemedim: {exc}")
-    st.stop()
+with st.spinner("ZaslugaBet lig kataloğu yükleniyor..."):
+    try:
+        league_catalog, cup_catalog, unresolved = resolve_zasluga_catalog(
+            list_all_leagues(api_key), int(season))
+    except Exception as exc:
+        st.error(f"ZaslugaBet lig kataloğu alınamadı: {exc}")
+        st.stop()
 
 with st.sidebar:
-    board_names = st.multiselect("Bültende görünecek ligler", list(catalog),
-                                 default=board_default_names(catalog, country))
-    european_board = st.multiselect("Bültendeki Avrupa kupaları", list(EUROPE_IDS.values()), default=[])
-    st.divider()
-    st.subheader("📚 Hakem arşivi kapsamı")
-    default_history = default_turkish_names(catalog) if country == "Turkey" else list(catalog)[:4]
-    history_names = st.multiselect("Hakemin geçmişini taranacak lig/kupalar", list(catalog),
-                                   default=default_history,
-                                   help="Seçilmemiş profesyonel yarışmalardan maçlar arşive katılamaz.")
-    european_history = st.multiselect("Hakem geçmişi: Avrupa kupaları", list(EUROPE_IDS.values()),
-                                      default=list(EUROPE_IDS.values()))
-    st.caption("Hazırlık, kadın ve alt yaş maçları dahil edilmez. Diğer ülkelerin lig maçları bu tarama kapsamı dışındadır.")
+    st.caption(f"ZaslugaBet kapsamı: 40 yerel lig + {len(EUROPE_IDS)} Avrupa kupası (API'de eşleşen: {len(league_catalog)} lig).")
+    selected_countries = st.multiselect(
+        "Bültendeki ülkeler (birden çok seçilebilir)",
+        COUNTRIES,
+        default=COUNTRIES,
+        format_func=lambda x: COUNTRY_TR[x],
+    )
+    selectable_leagues = [label for label, (country, _) in league_catalog.items()
+                          if country in selected_countries]
+    board_names = st.multiselect("Bültendeki ligler", selectable_leagues,
+                                 default=selectable_leagues,
+                                 help="Seçtiğin bütün ligler tek günlük bültende gösterilir.")
+    selectable_cups = [label for label, (country, _) in cup_catalog.items()
+                       if country in selected_countries]
+    board_cups = st.multiselect("Bültendeki ulusal kupalar", selectable_cups, default=[])
+    european_board = st.multiselect("Bültendeki Avrupa kupaları", list(EUROPE_IDS.values()),
+                                    default=list(EUROPE_IDS.values()))
+    with st.expander("⚠️ API'de eşleşmeyen ligler ve sezon bilgileri"):
+        if unresolved:
+            for warning in unresolved:
+                st.caption("• " + warning)
+        else:
+            st.caption("40 lig için de API kataloğunda eşleşme bulundu.")
+    st.caption("Hazırlık, kadın ve alt yaş maçları taranmıyor. Ligler ve Avrupa turnuvaları ayrı sayılır.")
 
-board_ids = {catalog[n] for n in board_names}
+board_ids = {league_catalog[n][1] for n in board_names}
+board_ids.update(cup_catalog[n][1] for n in board_cups)
 board_ids.update(lid for lid, name in EUROPE_IDS.items() if name in european_board)
-history_ids = {catalog[n] for n in history_names}
-history_ids.update(lid for lid, name in EUROPE_IDS.items() if name in european_history)
-# Maçın organizasyonunu hakem geçmişine mutlaka kat.
-history_ids.update(board_ids)
 
 if not board_ids:
-    st.warning("En az bir bülten ligi seç.")
+    st.warning("Günlük bülten için en az bir lig veya kupa seç.")
     st.stop()
 
 st.subheader(f"📋 {selected_date.strftime('%d.%m.%Y')} maçları")
@@ -371,9 +493,33 @@ if not referee:
     st.stop()
 
 st.markdown(f"**Hakem:** {referee}")
+
+# Hakem arşivinin kapsamını, maçın ülkesinden bağımsız seçilebilir tut.
+# Bültende 25 ülke açıkken her maç için 80-100 API çağrısı yapmak yerine
+# varsayılan ilgili ülkeyi, ulusal kupasını ve bütün UEFA kupalarını tararız.
+fixture_country = fixture.get("country") or ""
+default_history_country = [fixture_country] if fixture_country in COUNTRIES else ["Turkey"]
+with st.sidebar:
+    st.divider()
+    st.subheader("📚 Seçilen hakemin arşivi")
+    full_history = st.checkbox("40 ZaslugaBet liginin hepsini tara (çok API isteği)", value=False,
+                               help="Seçersen iki sezon için tüm ligler + kupalar taranır. Daha eksiksiz ama yavaştır.")
+    history_countries = st.multiselect(
+        "Hakemin geçmişi: taranacak ülkeler", COUNTRIES,
+        default=COUNTRIES if full_history else default_history_country,
+        format_func=lambda x: COUNTRY_TR[x],
+        help="Hakemin farklı ülkelerde maç yönettiğini biliyorsan ülkelerini ekle.")
+
+history_ids = {lid for _, (country, lid) in league_catalog.items() if country in history_countries}
+history_ids.update(lid for _, (country, lid) in cup_catalog.items() if country in history_countries)
+history_ids.update(EUROPE_IDS.keys())
+history_ids.add(int(fixture["league_id"]))
 if not history_ids:
-    st.warning("Hakem arşivi için organizasyon seçmelisin.")
+    st.warning("Hakem geçmişi için en az bir organizasyon seç.")
     st.stop()
+st.caption(f"📚 Arşiv: {len(history_countries)} ülke, {len(history_ids)} organizasyon. "
+           "Hakem ataması boş olan API kayıtları yine eksik kalabilir. "
+           "Diğer ülkeler için arşiv kapsamını soldan genişletebilirsin.")
 
 # Arşiv taramaları kullanıcı bir maça tıkladığında çalışır.
 with st.spinner("Hakemin geçen sezon ve bu sezon yönettiği maçlar aranıyor..."):
@@ -433,7 +579,7 @@ with st.expander("🔍 Veri kapsamı ve eksik taramalar"):
         st.error("Bazı organizasyonlar taranamadı. Sıralamalar eksik olabilir:\n" + "\n".join(failures))
     if any((r.get("referee") or "") == "" for r in entries):
         st.warning("API'de hakem adı boş olan maçlar var. Bu hakemin geçmiş maçları eksik olabilir; tüm maç sayısı kesin değildir.")
-    st.caption("Taranan lig/kupa sayısı: " + str(len(history_ids)) + ". Hariç tutulan başka ülke ligleri ve API'deki boş atamalar sıralamayı etkileyebilir.")
+    st.caption("Taranan lig/kupa sayısı: " + str(len(history_ids)) + ". Seçilmemiş diğer ülke ligleri ve API'deki boş hakem atamaları sıralamayı etkileyebilir.")
 
 if "card_results" not in st.session_state:
     st.session_state.card_results = {}
