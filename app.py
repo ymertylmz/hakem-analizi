@@ -13,6 +13,7 @@ from typing import Optional
 import pandas as pd
 import requests
 import streamlit as st
+from pathlib import Path
 
 from engine import (
     EUROPE_IDS,
@@ -68,7 +69,14 @@ def sequence_evidence(previous, current, category_name, chosen_id=None):
     return pd.DataFrame(records)
 
 
-st.set_page_config(page_title="Hakem Analizi | Maç Bülteni", page_icon="⚽", layout="wide")
+# Logo app.py ile ayni klasordeki logoo.png dosyasindan yuklenir.
+LOGO_PATH = Path(__file__).resolve().parent / "logoo.png"
+
+st.set_page_config(
+    page_title="Hakem Analizi | Maç Bülteni",
+    page_icon=str(LOGO_PATH) if LOGO_PATH.is_file() else "⚽",
+    layout="wide",
+)
 
 BASE = "https://v3.football.api-sports.io"
 # Kaynak: ZaslugaBet Günlük Sinyal deposundaki EXACT lig eşleştirmesi.
@@ -462,6 +470,12 @@ def history_view(df, show_signals, download_key):
 
 
 # ------------ ARAYÜZ -------------
+# Ana sayfada logoyu goster. Logo yuklenmemisse uygulama calismaya devam eder.
+if LOGO_PATH.is_file():
+    st.image(str(LOGO_PATH), width=520)
+else:
+    st.caption("🖼️ Logo bulunamadı. GitHub ana klasörüne logoo.png dosyasını yükle.")
+
 st.title("⚽ Hakem Analizi | Günlük Maç Bülteni")
 st.caption("Önce günü ve ligleri seç → maçlardan birine tıkla → hakemin iki sezonluk analizini gör.")
 try:
