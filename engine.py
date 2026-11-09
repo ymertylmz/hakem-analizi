@@ -14,12 +14,40 @@ def clean(text):
     return "".join(c for c in value if not unicodedata.combining(c)).casefold().strip()
 
 
+# API-Football bazen hakemin ülkesini sonuna ekler:
+# "Halil Umut Meler, Türkiye" ve "Halil Umut Meler" aynı kişidir.
+# "Meler, Halil Umut" gibi soyad-önce yazımları da desteklenir.
+COUNTRY_SUFFIXES = {
+    "turkiye", "turkey", "türkiye", "turquie", "turchia",
+    "england", "scotland", "wales", "northern ireland", "ireland",
+    "france", "germany", "italy", "spain", "portugal", "netherlands",
+    "belgium", "austria", "switzerland", "denmark", "sweden", "norway",
+    "finland", "poland", "greece", "croatia", "serbia", "romania",
+    "czech republic", "czechia", "slovakia", "slovenia", "hungary",
+    "ukraine", "russia", "georgia", "azerbaijan", "israel", "cyprus",
+    "albania", "bosnia and herzegovina", "bulgaria", "montenegro",
+    "brazil", "argentina", "uruguay", "australia", "united states",
+    "united states of america", "usa", "mexico", "japan", "korea republic",
+    "saudi arabia", "morocco", "egypt", "tunisia", "qatar",
+}
+
+
 def norm_ref(text):
-    # API often formats names as "Surname, Firstname".
     s = clean(text)
-    if "," in s:
-        p = [x.strip() for x in s.split(",", 1)]
-        s = " ".join(reversed(p))
+    parts = [p.strip() for p in s.split(",") if p.strip()]
+    # İlk olarak ülke etiketlerini çıkar. Soyad-ad biçimini yanlışlıkla ters çevirme.
+    while len(parts) > 1 and parts[-1] in COUNTRY_SUFFIXES:
+        parts.pop()
+    if len(parts) == 2:
+        # "Soyad, Ad" biçiminde ilk öğe genellikle tek kelimedir.
+        if len(parts[0].split()) == 1 and len(parts[1].split()) >= 1:
+            s = parts[1] + " " + parts[0]
+        else:
+            s = " ".join(parts)
+    else:
+        s = " ".join(parts)
+    # Noktasız ı ve Türkçe normalizasyonu tutarlı olsun.
+    s = s.replace("ı", "i").replace("æ", "ae")
     return " ".join(re.findall(r"[a-z0-9]+", s))
 
 
@@ -109,7 +137,7 @@ def make_table(rows):
         return df
     df["date_sort"] = pd.to_datetime(df["date"], utc=True, errors="coerce")
     df = df.sort_values(["date_sort", "id"], kind="stable").drop_duplicates("id").reset_index(drop=True)
-    df["all_order"] = range(1, len(df) + 1)
+    df["all_order"] = df.groupby("season").cumcount() + 1
     df["cat_order"] = df.groupby(["season", "category"]).cumcount() + 1
     return df
 
