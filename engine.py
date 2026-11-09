@@ -136,9 +136,13 @@ def make_table(rows):
     if df.empty:
         return df
     df["date_sort"] = pd.to_datetime(df["date"], utc=True, errors="coerce")
-    df = df.sort_values(["date_sort", "id"], kind="stable").drop_duplicates("id").reset_index(drop=True)
-    df["all_order"] = df.groupby("season").cumcount() + 1
-    df["cat_order"] = df.groupby(["season", "category"]).cumcount() + 1
+    # Bir maç birden çok organizasyon aramasından dönebilir; ID'ye göre tekilleştir.
+    df = (df.sort_values(["date_sort", "id"], kind="stable")
+            .drop_duplicates("id")
+            .reset_index(drop=True))
+    # Her sezonun ilk maçı daima 1. Her kategori için yine 1'den başlanır.
+    df["all_order"] = df.groupby("season", sort=False).cumcount() + 1
+    df["cat_order"] = df.groupby(["season", "category"], sort=False).cumcount() + 1
     return df
 
 
@@ -203,3 +207,45 @@ def cards_from_events(events, home_id, away_id):
             found = True
     # An empty event response does not establish 0 cards.
     return result if found else None
+
+
+def sequence_consistency(df):
+    """Sıralar bütün sezonlar ve kategoriler için 1..N olmalı."""
+    if df.empty:
+        return True, []
+    faults = []
+    for season, part in df.groupby("season"):
+        got = part.sort_values(["date_sort", "id"], kind="stable")["all_order"].astype(int).tolist()
+        if got != list(range(1, len(part) + 1)):
+            faults.append(f"{season}: genel sıra 1..{len(part)} değil")
+        for category_name, cat in part.groupby("category"):
+            got_cat = cat.sort_values(["date_sort", "id"], kind="stable")["cat_order"].astype(int).tolist()
+            if got_cat != list(range(1, len(cat) + 1)):
+                faults.append(f"{season} {category_name}: kategori sırası hatalı")
+    return len(faults) == 0, faults
+
+
+def sequence_evidence(previous, current, category_name, chosen_id=None):
+    """İki sezonun aynı kategorideki numaralandırma kanıtlarını birlikte döndür."""
+    records = []
+    for frame in (previous, current):
+        if frame.empty:
+            continue
+        part = frame[frame.category == category_name].sort_values(["date_sort", "id"])
+        for _, r in part.iterrows():
+            day = r["date_sort"]
+            records.append({
+                "Sezon": f"{int(r['season'])}-{int(r['season'])+1}",
+                "Lig/Kategori sırası": int(r["cat_order"]),
+                "Genel sıra": int(r["all_order"]),
+                "Tarih": day.tz_convert("Europe/Istanbul").strftime("%d.%m.%Y %H:%M") if pd.notna(day) else "?",
+                "Organizasyon": r["league"],
+                "Maç": f"{r['home']} - {r['away']}",
+                "İY skor": r["halftime"],
+                "MS skor": r["fulltime"],
+                "İY/MS": r["iy_ms"],
+                "Durum": r["status"],
+                "Eşleşme": "◀ Seçilen maç" if r["id"] == chosen_id else "",
+                "API maç ID": r["id"],
+            })
+    return pd.DataFrame(records)

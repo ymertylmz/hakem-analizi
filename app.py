@@ -22,6 +22,8 @@ from engine import (
     build_signals,
     apply_cards,
     cards_from_events,
+    sequence_consistency,
+    sequence_evidence,
 )
 
 st.set_page_config(page_title="Hakem Analizi | Maç Bülteni", page_icon="⚽", layout="wide")
@@ -296,24 +298,55 @@ def make_board(fixtures, selected_leagues):
     return sorted(result, key=lambda r: (r["date"], r["competition"], str(r["id"])))
 
 
-def history_scan(ids, season, key, progress=None):
+def history_scan(ids, season, key, referee_name, progress=None):
+    """Taranan HER organizasyonu raporlar; olası eksik hakem adlarını saklamaz."""
     all_data, failures, coverage = [], [], []
     scans = [(yr, lid) for yr in [season - 1, season] for lid in sorted(ids)]
     for ix, (year, lid) in enumerate(scans):
         try:
             fixtures = get_season_fixtures(lid, year, key)
-            # Her zaman gelen organizasyonun id'sini doğrula.
             converted = rows_from_fixtures(fixtures, year, set(ids))
             all_data.extend(converted)
-            coverage.append({"Sezon": f"{year}-{year+1}", "Lig ID": lid,
-                             "API maç": len(fixtures), "Okunan maç": len(converted), "Hata": ""})
+            unknown = sum(not normalized_referee(x.get("referee")) for x in converted)
+            matched = sum(is_same_referee(x.get("referee"), referee_name) for x in converted)
+            example_name = (converted[0].get("league") if converted else "-")
+            coverage.append({
+                "Sezon": f"{year}-{year+1}", "Organizasyon": example_name,
+                "Lig ID": lid, "API'den gelen": len(fixtures), "Okunan": len(converted),
+                "Hakem adı boş": unknown, "Hakem eşleşmesi": matched, "Hata": "",
+            })
         except Exception as exc:
             failures.append(f"{year}, ID {lid}: {exc}")
-            coverage.append({"Sezon": f"{year}-{year+1}", "Lig ID": lid,
-                             "API maç": "?", "Okunan maç": "?", "Hata": str(exc)[:100]})
+            coverage.append({
+                "Sezon": f"{year}-{year+1}", "Organizasyon": "-", "Lig ID": lid,
+                "API'den gelen": "?", "Okunan": "?", "Hakem adı boş": "?",
+                "Hakem eşleşmesi": "?", "Hata": str(exc)[:140],
+            })
         if progress:
             progress.progress((ix + 1) / max(1, len(scans)))
     return all_data, failures, coverage
+
+
+def sequence_data_gaps(entries, season, category_name, selected_fixture_date):
+    """Tamamlanmış ama hakemsiz kayıtlardan ilgili sıra için risk çıkarır.
+
+    Gelecekteki atanmamış hakemler hata sanılmaz. İki sezonun bütün
+    organizasyonlarında aynı kategoriye ait geçmişteki boş kayıtlar sayılır.
+    """
+    selected_date = pd.to_datetime(selected_fixture_date, utc=True, errors="coerce")
+    counters = {season - 1: 0, season: 0}
+    for r in entries:
+        yr = r.get("season")
+        if yr not in counters or r.get("category") != category_name:
+            continue
+        if normalized_referee(r.get("referee")) or not r.get("finished"):
+            continue
+        fixture_date = pd.to_datetime(r.get("date"), utc=True, errors="coerce")
+        if yr == season and pd.notna(selected_date) and pd.notna(fixture_date):
+            if fixture_date > selected_date:
+                continue
+        counters[yr] += 1
+    return counters
 
 
 def card_stats_from_api(data, home_id, away_id):
@@ -377,6 +410,8 @@ def history_view(df, show_signals, download_key):
         cols.update({"order_signal": "Sıra sinyali", "week_signal": "Hafta sinyali",
                      "prev_order_match": "Geçen sezon aynı sıra",
                      "prev_week_match": "Geçen sezon aynı hafta"})
+        if "quality" in df.columns:
+            cols["quality"] = "Veri güvenilirliği"
     frame = df[list(cols)].rename(columns=cols)
     st.dataframe(frame, hide_index=True, use_container_width=True,
                  height=min(650, 65 + 36 * len(frame)))
@@ -502,13 +537,19 @@ default_history_country = [fixture_country] if fixture_country in COUNTRIES else
 with st.sidebar:
     st.divider()
     st.subheader("📚 Seçilen hakemin arşivi")
-    full_history = st.checkbox("40 ZaslugaBet liginin hepsini tara (çok API isteği)", value=False,
-                               help="Seçersen iki sezon için tüm ligler + kupalar taranır. Daha eksiksiz ama yavaştır.")
-    history_countries = st.multiselect(
-        "Hakemin geçmişi: taranacak ülkeler", COUNTRIES,
-        default=COUNTRIES if full_history else default_history_country,
-        format_func=lambda x: COUNTRY_TR[x],
-        help="Hakemin farklı ülkelerde maç yönettiğini biliyorsan ülkelerini ekle.")
+    full_history = st.checkbox(
+        "40 ZaslugaBet liginin tamamını tara (önerilir)", value=True,
+        help="İki sezondaki 40 lig + eşleşen ulusal kupalar + 3 Avrupa kupası taranır. "
+             "API isteği sayısı yüksektir; geçmiş taramaları önbelleğe alınır.")
+    if full_history:
+        history_countries = COUNTRIES
+        st.caption("Kapsamlı tarama açık. Çok sayıda istek yapılır; API kotan azalabilir.")
+    else:
+        history_countries = st.multiselect(
+            "Hızlı tarama: hakemin ülkeleri", COUNTRIES,
+            default=default_history_country,
+            format_func=lambda x: COUNTRY_TR[x],
+            help="Hızlı tarama lig sırasını eksik sayabilir; sinyaller yalnızca adaydır.")
 
 history_ids = {lid for _, (country, lid) in league_catalog.items() if country in history_countries}
 history_ids.update(lid for _, (country, lid) in cup_catalog.items() if country in history_countries)
@@ -524,7 +565,7 @@ st.caption(f"📚 Arşiv: {len(history_countries)} ülke, {len(history_ids)} org
 # Arşiv taramaları kullanıcı bir maça tıkladığında çalışır.
 with st.spinner("Hakemin geçen sezon ve bu sezon yönettiği maçlar aranıyor..."):
     bar = st.progress(0, text="Sezon ve organizasyonlar taranıyor")
-    entries, failures, coverage = history_scan(history_ids, int(season), api_key, progress=bar)
+    entries, failures, coverage = history_scan(history_ids, int(season), api_key, referee, progress=bar)
     bar.empty()
 
 filtered = [r for r in entries if is_same_referee(r.get("referee"), referee)]
@@ -550,6 +591,28 @@ prev = all_df[all_df.season == int(season)-1].copy()
 cur = all_df[all_df.season == int(season)].copy()
 cur = build_signals(prev, cur)
 
+# Her sezon ve kategorinin 1'den sayıldığını zorunlu olarak doğrula.
+seq_valid, seq_errors = sequence_consistency(all_df)
+if not seq_valid:
+    st.error("Sıra numarası tutarsızlığı: " + "; ".join(seq_errors))
+    st.stop()
+
+# Bu API'ye göre bulunan maçların sırası. Tüm dünyadaki hakem kayıtları garanti değil.
+selected_category = None
+selected_record_raw = cur[cur.id == fixture["id"]]
+if not selected_record_raw.empty:
+    selected_category = selected_record_raw.iloc[0]["category"]
+category_gaps = sequence_data_gaps(
+    entries, int(season), selected_category, fixture.get("date")
+) if selected_category else {}
+category_uncertain = (
+    not full_history or bool(failures) or bool(unresolved) or
+    bool(category_gaps and any(category_gaps.values()))
+)
+quality_note = "⚠️ Eksik veri riski: sıra adayı" if category_uncertain else "Taranan kaynaklarda açık eksik bulunmadı"
+# Normal maç tablosunu gizlemiyoruz; yalnızca sinyalin kanıt durumunu belirtiriz.
+cur["quality"] = quality_note
+
 # Seçilen maç satırını ayrı vurgulayalım. Sinyal olmasa bile görünür.
 selected_record = cur[cur.id == fixture["id"]]
 if not selected_record.empty:
@@ -560,9 +623,21 @@ if not selected_record.empty:
     c3.metric("Geçen sezon aynı sıra", r.prev_order_match or "Bulunamadı")
     c4.metric("Geçen sezon aynı hafta", r.prev_week_match or "Bulunamadı")
     if r.order_signal or r.week_signal:
-        st.success("📌 Geçmiş sonuç sinyali: " + " | ".join(x for x in [r.order_signal, r.week_signal] if x))
+        signal_text = " | ".join(x for x in [r.order_signal, r.week_signal] if x)
+        if category_uncertain:
+            st.warning("📌 Aday geçmiş sonuç sinyali: " + signal_text +
+                       ". Veri boşlukları nedeniyle maçın gerçek sıra numarası değişebilir.")
+        else:
+            st.success("📌 Taranan veride geçmiş sonuç sinyali: " + signal_text)
     else:
-        st.info("Bu maç için 1/2 veya 2/1 geçmiş sinyali yok. Tüm maçlar aşağıda yine gösteriliyor.")
+        st.info("Bu maç için bulunan arşivde 1/2 veya 2/1 geçmiş sinyali yok. Tüm maçlar aşağıda yine gösteriliyor.")
+    if category_uncertain:
+        st.warning("⚠️ Sıralama doğrulaması eksik: " +
+                   ("sınırlı ülke taraması; " if not full_history else "") +
+                   (f"{sum(category_gaps.values())} tamamlanmış maçın hakem adı API'de boş; " if category_gaps and sum(category_gaps.values()) else "") +
+                   (f"{len(failures)} başarısız organizasyon taraması; " if failures else "") +
+                   ("lig kataloğunda eşleşmeyen kayıtlar; " if unresolved else "") +
+                   "sinyalleri kesin sıra kanıtı olarak kullanma.")
 else:
     st.warning("Seçilen maçın sezon sıra numarası kesinleştirilemedi. İlgili sezon veya API bilgisi eksik olabilir.")
 
@@ -573,13 +648,37 @@ s3.metric("Sıra sinyali", sum(bool(x) for x in cur.order_signal) if not cur.emp
 s4.metric("Hafta sinyali", sum(bool(x) for x in cur.week_signal) if not cur.empty else 0)
 
 with st.expander("🔍 Veri kapsamı ve eksik taramalar"):
-    st.caption("Bu tabloda API'den çekilen toplam maçlar gösterilir; hakemin maç sayısı değildir.")
+    st.caption("Her organizasyon ve her sezon ayrı gösterilir. 'Hakem eşleşmesi' bu hakem için bulunan maçları, 'Hakem adı boş' ise doğrulanamayan maçları belirtir.")
     st.dataframe(pd.DataFrame(coverage), hide_index=True, use_container_width=True)
+    if category_gaps:
+        st.caption("Seçilen kategoride, tarihe kadar tamamlanmış fakat hakemi boş: " +
+                   f"geçen sezon {category_gaps[int(season)-1]}, bu sezon {category_gaps[int(season)]}.")
     if failures:
         st.error("Bazı organizasyonlar taranamadı. Sıralamalar eksik olabilir:\n" + "\n".join(failures))
     if any((r.get("referee") or "") == "" for r in entries):
         st.warning("API'de hakem adı boş olan maçlar var. Bu hakemin geçmiş maçları eksik olabilir; tüm maç sayısı kesin değildir.")
     st.caption("Taranan lig/kupa sayısı: " + str(len(history_ids)) + ". Seçilmemiş diğer ülke ligleri ve API'deki boş hakem atamaları sıralamayı etkileyebilir.")
+
+with st.expander("🧮 Sıra doğrulama: iki sezonda sıralamayı oluşturan TÜM maçlar", expanded=True):
+    if selected_category:
+        st.markdown(f"**Seçilen kategori: {selected_category}**. Kupa ve UEFA turnuvaları bu listede lig sırasını etkilemez.")
+        prev_cat = prev[prev.category == selected_category]
+        cur_cat = cur[cur.category == selected_category]
+        st.caption(
+            f"Geçen sezon: {len(prev_cat)} maç | Bu sezon: {len(cur_cat)} maç. "
+            "İki sezon ayrı ayrı 1'den başlar. Maç numaraları yalnızca API'de eşleşen kayıtlara dayanır."
+        )
+        evidence = sequence_evidence(prev, cur, selected_category, fixture["id"])
+        if not evidence.empty:
+            st.dataframe(evidence, hide_index=True, use_container_width=True,
+                         height=min(720, 80 + len(evidence) * 34))
+            st.download_button("📥 Sıra kanıtlarını CSV indir", evidence.to_csv(index=False).encode("utf-8-sig"),
+                               file_name=f"hakem_{fixture['id']}_sira_kaniti.csv", mime="text/csv")
+        if category_uncertain:
+            st.warning("Bu liste taranan kaynakların kanıtıdır, hakemin kesin eksiksiz kariyeri değildir. "
+                       "Boş hakem alanları veya taranmayan organizasyonlar gerçek sırayı değiştirebilir.")
+    else:
+        st.info("Seçilen maç için kategori sırası hesaplanamadı; geçmiş maçların genel listesi yine gösterilecek.")
 
 if "card_results" not in st.session_state:
     st.session_state.card_results = {}
@@ -627,4 +726,7 @@ with t3:
         else:
             history_view(filtered_signals, True, "signals")
 
-st.caption("⚠️ API-Football'un hakem alanı boş veya eksik olduğunda karşılaşmalar eksik eşleşebilir. Veri doğruluğunu garanti edemeyiz; bu ekran tahmin değil geçmiş veri analizidir.")
+st.caption("⚠️ API-Football hakem adına göre doğrudan tüm kariyeri sunmaz. "
+           "40 ZaslugaBet ligi ve seçilen kupalarda eşleşen kayıtlar sayılmıştır; "
+           "başka turnuvalar, API'de hakemi boş maçlar veya sezon uyumsuzluğu bulunabilir. "
+           "İY/MS geçmiş örüntüleri tahmin garantisi değildir.")
