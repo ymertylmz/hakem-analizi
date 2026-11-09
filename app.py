@@ -22,9 +22,51 @@ from engine import (
     build_signals,
     apply_cards,
     cards_from_events,
-    sequence_consistency,
-    sequence_evidence,
 )
+
+# Sıra doğrulama işlevleri uygulamanın içinde tutulur. Böylece
+# Streamlit bir önceki engine.py sürümünü kullanırken ImportError oluşmaz.
+def sequence_consistency(df):
+    """Sıralar bütün sezonlar ve kategoriler için 1..N olmalı."""
+    if df.empty:
+        return True, []
+    faults = []
+    for season, part in df.groupby("season"):
+        got = part.sort_values(["date_sort", "id"], kind="stable")["all_order"].astype(int).tolist()
+        if got != list(range(1, len(part) + 1)):
+            faults.append(f"{season}: genel sıra 1..{len(part)} değil")
+        for category_name, cat in part.groupby("category"):
+            got_cat = cat.sort_values(["date_sort", "id"], kind="stable")["cat_order"].astype(int).tolist()
+            if got_cat != list(range(1, len(cat) + 1)):
+                faults.append(f"{season} {category_name}: kategori sırası hatalı")
+    return len(faults) == 0, faults
+
+
+def sequence_evidence(previous, current, category_name, chosen_id=None):
+    """İki sezonun aynı kategorideki numaralandırma kanıtlarını birlikte döndür."""
+    records = []
+    for frame in (previous, current):
+        if frame.empty:
+            continue
+        part = frame[frame.category == category_name].sort_values(["date_sort", "id"])
+        for _, r in part.iterrows():
+            day = r["date_sort"]
+            records.append({
+                "Sezon": f"{int(r['season'])}-{int(r['season'])+1}",
+                "Lig/Kategori sırası": int(r["cat_order"]),
+                "Genel sıra": int(r["all_order"]),
+                "Tarih": day.tz_convert("Europe/Istanbul").strftime("%d.%m.%Y %H:%M") if pd.notna(day) else "?",
+                "Organizasyon": r["league"],
+                "Maç": f"{r['home']} - {r['away']}",
+                "İY skor": r["halftime"],
+                "MS skor": r["fulltime"],
+                "İY/MS": r["iy_ms"],
+                "Durum": r["status"],
+                "Eşleşme": "◀ Seçilen maç" if r["id"] == chosen_id else "",
+                "API maç ID": r["id"],
+            })
+    return pd.DataFrame(records)
+
 
 st.set_page_config(page_title="Hakem Analizi | Maç Bülteni", page_icon="⚽", layout="wide")
 
